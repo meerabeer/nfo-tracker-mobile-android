@@ -9,7 +9,6 @@ import {
   FlatList,
   TextInput,
 } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../services/supabaseClient';
 import { NFOStatus } from '../types';
@@ -395,52 +394,7 @@ export const ManagerDashboardScreen: React.FC = () => {
             />
           </View>
 
-          {/* Map */}
-          <View style={styles.mapContainer}>
-            <MapView
-              style={styles.map}
-              pointerEvents="auto"
-              initialRegion={currentRegion}
-              region={currentRegion}
-            >
-              {/* NFO markers */}
-              {sortedNfos.map((nfo) => {
-                if (!nfo.lat || !nfo.lng) return null;
-                const status = nfo.status || 'off';
-                let pinColor = '#999';
-                if (nfo.logged_in && nfo.on_shift && status === 'busy') {
-                  pinColor = 'red';
-                } else if (nfo.logged_in && nfo.on_shift && status === 'free') {
-                  pinColor = 'green';
-                } else if (nfo.logged_in) {
-                  pinColor = 'orange';
-                }
 
-                const displayName = getDisplayName(nfo);
-
-                return (
-                  <Marker
-                    key={`nfo-${nfo.username}`}
-                    coordinate={{ latitude: nfo.lat, longitude: nfo.lng }}
-                    pinColor={pinColor}
-                    title={displayName}
-                    description={`ID: ${nfo.username} • ${status} • Site: ${nfo.site_id || '-'}`}
-                  />
-                );
-              })}
-
-              {/* Site markers */}
-              {filteredSites.map((site) => (
-                <Marker
-                  key={`site-${site.site_id}`}
-                  coordinate={{ latitude: site.latitude!, longitude: site.longitude! }}
-                  pinColor="#0044cc"
-                  title={String(site.site_id)}
-                  description={site.area || ''}
-                />
-              ))}
-            </MapView>
-          </View>
 
           <Text style={styles.nfoListTitle}>Field Engineers ({sortedNfos.length})</Text>
           {isLoading ? (
