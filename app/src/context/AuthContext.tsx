@@ -1,5 +1,6 @@
 import React, { createContext, useState, useCallback, useContext } from 'react';
 import { supabase } from '../services/supabaseClient';
+import { loginWithSupabase } from '../services/authApi';
 import { AuthState, NFOUser, Manager, UserRole } from '../types';
 
 interface AuthContextType extends AuthState {
@@ -24,21 +25,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
       try {
-        const tableName = role === 'NFO' ? 'nfo_users' : 'managers';
-
-        const { data, error } = await supabase
-          .from(tableName)
-          .select('*')
-          .eq('username', username)
-          .eq('password', password)
-          .single();
-
-        if (error || !data) {
-          throw new Error('Invalid credentials');
-        }
+        // Convert UserRole to authApi UserRole
+        const apiRole = role === 'NFO' ? 'nfo' : 'manager';
+        
+        // Use loginWithSupabase from authApi for validation
+        const result = await loginWithSupabase(apiRole, username, password);
+        
+        // Map the result to the expected NFOUser or Manager format
+        const userData: NFOUser | Manager = role === 'NFO'
+          ? {
+              username: result.username,
+              full_name: result.name || '',
+              home_location: result.home_location || '',
+              is_active: true,
+            }
+          : {
+              username: result.username,
+              full_name: result.name || '',
+              area: result.area || '',
+            };
 
         setAuthState({
-          user: data as NFOUser | Manager,
+          user: userData,
           role: role,
           isLoading: false,
           error: null,

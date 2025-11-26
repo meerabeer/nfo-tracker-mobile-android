@@ -8,25 +8,38 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { loginWithSupabase, UserRole as AuthApiUserRole } from '../services/authApi';
 import { useAuth } from '../context/AuthContext';
 import { UserRole } from '../types';
 
 export const LoginScreen: React.FC = () => {
+  const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('NFO');
-  const { login, isLoading, error } = useAuth();
+  const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
-      Alert.alert('Error', 'Please enter username and password');
+      Alert.alert('Missing data', 'Please enter username and password.');
       return;
     }
 
+    setLoading(true);
     try {
+      // Validate with loginWithSupabase first
+      const apiRole: AuthApiUserRole = role === 'NFO' ? 'nfo' : 'manager';
+      const user = await loginWithSupabase(apiRole, username, password);
+      console.log('Login successful:', user);
+      
+      // Then update auth context to trigger navigation
       await login(username, password, role);
     } catch (err) {
-      Alert.alert('Login Failed', error || 'Invalid credentials');
+      Alert.alert(
+        'Login error',
+        err instanceof Error ? err.message : 'Unable to login.'
+      );
+      setLoading(false);
     }
   };
 
@@ -76,7 +89,7 @@ export const LoginScreen: React.FC = () => {
         placeholder="Username"
         value={username}
         onChangeText={setUsername}
-        editable={!isLoading}
+        editable={!loading}
         placeholderTextColor="#999"
       />
 
@@ -86,19 +99,17 @@ export const LoginScreen: React.FC = () => {
         value={password}
         onChangeText={setPassword}
         secureTextEntry
-        editable={!isLoading}
+        editable={!loading}
         placeholderTextColor="#999"
       />
 
-      {error && <Text style={styles.errorText}>{error}</Text>}
-
       <TouchableOpacity
-        style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
+        style={[styles.loginButton, loading && styles.loginButtonDisabled]}
         onPress={handleLogin}
-        disabled={isLoading}
+        disabled={loading}
       >
-        {isLoading ? (
-          <ActivityIndicator color="#fff" />
+        {loading ? (
+          <Text style={styles.loginButtonText}>Logging in…</Text>
         ) : (
           <Text style={styles.loginButtonText}>Login</Text>
         )}

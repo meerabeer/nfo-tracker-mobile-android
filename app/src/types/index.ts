@@ -26,18 +26,20 @@ export type NFOStatusType = 'free' | 'busy';
 
 export interface NFOStatus {
   username: string;
+  name?: string;
   logged_in: boolean;
   on_shift: boolean;
-  status: NFOStatusType;
-  activity: string;
+  status: NFOStatusType | 'off-shift';
+  activity: string | null;
   site_id: string | null;
   work_order_id: string | null;
   lat: number | null;
   lng: number | null;
   last_active_at: string;
   last_active_source: string;
-  created_at: string;
+  last_ping: string;
   updated_at: string;
+  home_location: string | null;
 }
 
 // Site Master Type

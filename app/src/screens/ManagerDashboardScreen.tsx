@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,34 +6,42 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   FlatList,
+  TextInput,
 } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../services/supabaseClient';
-import { getEtaForNfo } from '../services/orsClient';
-import { NFOStatus, SiteMaster } from '../types';
+import { NFOStatus } from '../types';
+
+interface NFOUser {
+  username: string;
+  name?: string;
+  home_location?: string;
+}
+
+interface SiteRow {
+  site_id: string;
+  latitude: number | null;
+  longitude: number | null;
+  area?: string | null;
+}
 
 export const ManagerDashboardScreen: React.FC = () => {
   const { user, logout } = useAuth();
   const [nfoList, setNfoList] = useState<NFOStatus[]>([]);
-  const [sites, setSites] = useState<SiteMaster[]>([]);
-  const [filterStatus, setFilterStatus] = useState<'all' | 'free' | 'busy'>(
-    'all'
-  );
-  const [selectedNfo, setSelectedNfo] = useState<NFOStatus | null>(null);
-  const [selectedSite, setSelectedSite] = useState<SiteMaster | null>(null);
-  const [eta, setEta] = useState<any>(null);
+  const [nfoUsers, setNfoUsers] = useState<NFOUser[]>([]);
+  const [sites, setSites] = useState<SiteRow[]>([]);
+  const [selectedArea, setSelectedArea] = useState<string>('All');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'free' | 'busy'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isCalculatingEta, setIsCalculatingEta] = useState(false);
-  const [showEtaModal, setShowEtaModal] = useState(false);
 
   const managerArea = (user as any)?.area || 'All';
 
-  // Fetch NFOs and Sites on mount
+  // Fetch NFOs on mount and set up auto-refresh
   useEffect(() => {
     fetchNfos();
-    fetchSites();
 
     // Set up auto-refresh every 10 seconds
     const interval = setInterval(() => {
@@ -47,172 +55,222 @@ export const ManagerDashboardScreen: React.FC = () => {
     try {
       setIsLoading(true);
 
-      let query = supabase
+      // Query nfo_status with only existing columns
+      const { data: statusData, error: statusError } = await supabase
         .from('nfo_status')
         .select(
-          'username, logged_in, on_shift, status, activity, site_id, work_order_id, lat, lng, last_active_at, last_active_source, created_at, updated_at'
-        )
-        .eq('logged_in', true);
+          'username, name, logged_in, on_shift, status, activity, site_id, home_location, lat, lng, last_ping, updated_at'
+        );
 
-      // Filter by area if manager has specific area (optional)
-      // This assumes nfo_status has an area field or we join with nfo_users
-      // For now, we'll fetch all and filter on client
-      const { data, error } = await query;
-
-      if (error) {
-        console.error('Error fetching NFOs:', error);
+      if (statusError) {
+        console.error('Error fetching NFOs:', statusError);
         return;
       }
 
-      if (data) {
-        // Filter by status if needed
-        let filtered = data;
-        if (filterStatus !== 'all') {
-          filtered = data.filter((nfo) => nfo.status === filterStatus);
-        }
+      if (statusData) {
+        setNfoList(statusData as NFOStatus[]);
+      }
 
-        setNfoList(filtered);
+      // Query NFOusers to get names
+      const { data: usersData, error: usersError } = await supabase
+        .from('NFOusers')
+        .select('username, name, home_location');
+
+      if (usersError) {
+        console.error('Error fetching NFO users:', usersError);
+      } else if (usersData) {
+        setNfoUsers(usersData as NFOUser[]);
+      }
+
+      // Query Site_Coordinates
+      const { data: sitesData, error: sitesError } = await supabase
+        .from('Site_Coordinates')
+        .select('site_id, latitude, longitude, area');
+
+      if (sitesError) {
+        console.error('Error fetching sites:', sitesError);
+      } else if (sitesData) {
+        setSites(sitesData as SiteRow[]);
       }
     } catch (err) {
       console.error('Error in fetchNfos:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [filterStatus]);
+  }, []);
 
-  const fetchSites = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('sites_master')
-        .select('site_id, city, area, latitude, longitude, location_type');
+  // Get distinct areas from home_location
+  const areas = useMemo(() => {
+    const areaSet = new Set<string>();
+    areaSet.add('All');
 
-      if (!error && data) {
-        setSites(data as SiteMaster[]);
+    nfoList.forEach((nfo) => {
+      if (nfo.home_location && nfo.home_location.trim()) {
+        areaSet.add(nfo.home_location);
       }
-    } catch (err) {
-      console.error('Error fetching sites:', err);
-    }
-  };
+    });
 
-  const calculateEta = async (
-    nfo: NFOStatus,
-    site: SiteMaster
-  ) => {
-    if (!nfo.lat || !nfo.lng) {
-      Alert.alert('Error', 'NFO location not available');
-      return;
+    return Array.from(areaSet).sort();
+  }, [nfoList]);
+
+  // Build NFO user lookup map
+  const nfoUserByUsername = useMemo(
+    () =>
+      new Map(
+        nfoUsers.map((u) => [u.username.trim().toUpperCase(), u])
+      ),
+    [nfoUsers]
+  );
+
+  // Filter NFOs by selected area, status, and search query
+  const filteredNfos = useMemo(() => {
+    let filtered = nfoList;
+
+    // Area filter first
+    if (selectedArea !== 'All') {
+      filtered = filtered.filter((nfo) => nfo.home_location === selectedArea);
     }
 
-    try {
-      setIsCalculatingEta(true);
-      const etaResponse = await getEtaForNfo(
-        { lat: nfo.lat, lng: nfo.lng },
-        { lat: site.latitude, lng: site.longitude }
+    // Status filter
+    if (statusFilter === 'online') {
+      filtered = filtered.filter((nfo) => nfo.logged_in);
+    } else if (statusFilter === 'offline') {
+      filtered = filtered.filter((nfo) => !nfo.logged_in);
+    } else if (statusFilter === 'free') {
+      filtered = filtered.filter(
+        (nfo) => nfo.logged_in && nfo.on_shift && nfo.status === 'free'
       );
-      setEta(etaResponse);
-      setSelectedNfo(nfo);
-      setSelectedSite(site);
-      setShowEtaModal(true);
-    } catch (err) {
-      Alert.alert('Error', 'Failed to calculate ETA');
-      console.error('Error calculating ETA:', err);
-    } finally {
-      setIsCalculatingEta(false);
+    } else if (statusFilter === 'busy') {
+      filtered = filtered.filter(
+        (nfo) => nfo.logged_in && nfo.on_shift && nfo.status === 'busy'
+      );
+    }
+    // if 'all', no extra filtering
+
+    // Search filter
+    if (searchQuery.trim().length > 0) {
+      const q = searchQuery.trim().toLowerCase();
+      filtered = filtered.filter((nfo) => {
+        const rawName = (nfo as any).name as string | undefined;
+        const meta = nfoUserByUsername.get(nfo.username.trim().toUpperCase());
+        const displayName =
+          rawName && rawName.trim().length > 0
+            ? rawName.trim()
+            : meta?.name || '';
+        return (
+          displayName.toLowerCase().includes(q) ||
+          nfo.username.toLowerCase().includes(q)
+        );
+      });
+    }
+
+    return filtered;
+  }, [nfoList, selectedArea, statusFilter, searchQuery, nfoUserByUsername]);
+
+  // Sort NFOs: by status (busy → free → off-shift), then by last_ping (recent first)
+  const sortedNfos = useMemo(() => {
+    const statusOrder = { busy: 0, free: 1, 'off-shift': 2 };
+    return [...filteredNfos].sort((a, b) => {
+      const statusA = statusOrder[a.status as keyof typeof statusOrder] ?? 3;
+      const statusB = statusOrder[b.status as keyof typeof statusOrder] ?? 3;
+
+      if (statusA !== statusB) {
+        return statusA - statusB;
+      }
+
+      // Then sort by last_ping (most recent first)
+      return new Date(b.last_ping).getTime() - new Date(a.last_ping).getTime();
+    });
+  }, [filteredNfos]);
+
+  // Compute counters from full nfoList
+  const stats = useMemo(() => {
+    const total = nfoList.length;
+    const online = nfoList.filter((nfo) => nfo.logged_in).length;
+    const offline = nfoList.filter((nfo) => !nfo.logged_in).length;
+    const free = nfoList.filter(
+      (nfo) =>
+        nfo.logged_in && nfo.on_shift && nfo.status === 'free'
+    ).length;
+    const busy = nfoList.filter(
+      (nfo) =>
+        nfo.logged_in && nfo.on_shift && nfo.status === 'busy'
+    ).length;
+
+    return { total, online, offline, free, busy };
+  }, [nfoList]);
+
+  // Format time relative to now
+  const formatTimeAgo = (timestamp: string): string => {
+    try {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+      if (seconds < 60) return 'Just now';
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+      if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+      return `${Math.floor(seconds / 86400)}d ago`;
+    } catch {
+      return timestamp;
     }
   };
 
-  // Calculate summary statistics
-  const stats = {
-    total: nfoList.length,
-    online: nfoList.filter((nfo) => nfo.logged_in).length,
-    offline: nfoList.filter((nfo) => !nfo.logged_in).length,
-    free: nfoList.filter((nfo) => nfo.status === 'free').length,
-    busy: nfoList.filter((nfo) => nfo.status === 'busy').length,
+  // Get status color
+  const getStatusColor = (nfo: NFOStatus): string => {
+    if (!nfo.logged_in) return '#999';
+    if (nfo.status === 'free') return '#FF9500';
+    if (nfo.status === 'busy') return '#5AC8FA';
+    return '#999';
   };
 
-  const formatTimeAgo = (timestamp: string): string => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-    if (seconds < 60) return 'Just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
+  const getStatusLabel = (nfo: NFOStatus): string => {
+    if (!nfo.logged_in) return 'Offline';
+    return nfo.status || 'Unknown';
   };
 
-  if (showEtaModal && selectedNfo && selectedSite) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.etaModalHeader}>
-          <TouchableOpacity onPress={() => setShowEtaModal(false)}>
-            <Text style={styles.backButton}>← Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.etaModalTitle}>ETA Details</Text>
-          <View style={{ width: 50 }} />
-        </View>
+  const getDisplayName = (nfo: NFOStatus): string => {
+    const rawName = (nfo as any).name as string | undefined;
+    if (rawName && rawName.trim().length > 0) {
+      return rawName.trim();
+    }
+    const userMeta = nfoUserByUsername.get(nfo.username.trim().toUpperCase());
+    return userMeta?.name || nfo.username;
+  };
 
-        <ScrollView style={styles.etaModalContent}>
-          <View style={styles.etaSection}>
-            <Text style={styles.etaLabel}>NFO:</Text>
-            <Text style={styles.etaValue}>{selectedNfo.username}</Text>
-          </View>
+  // Filter sites by selected area
+  const filteredSites = useMemo(
+    () =>
+      sites.filter((s) => {
+        if (!s.latitude || !s.longitude) return false;
+        if (selectedArea === 'All') return true;
+        const siteArea = (s.area || '').trim();
+        return siteArea === selectedArea;
+      }),
+    [sites, selectedArea]
+  );
 
-          <View style={styles.etaSection}>
-            <Text style={styles.etaLabel}>Destination Site:</Text>
-            <Text style={styles.etaValue}>{selectedSite.site_id}</Text>
-            <Text style={styles.etaSubtitle}>
-              {selectedSite.city}, {selectedSite.area}
-            </Text>
-          </View>
+  // Map region helpers
+  const firstNfoWithCoords = sortedNfos.find(
+    (nfo) => typeof nfo.lat === 'number' && typeof nfo.lng === 'number'
+  );
 
-          <View style={styles.etaSection}>
-            <Text style={styles.etaLabel}>Current Location:</Text>
-            <Text style={styles.etaValue}>
-              {selectedNfo.lat?.toFixed(6)}, {selectedNfo.lng?.toFixed(6)}
-            </Text>
-          </View>
+  const initialLat = firstNfoWithCoords?.lat ?? 21.3891; // default Makkah
+  const initialLng = firstNfoWithCoords?.lng ?? 39.8579;
 
-          <View style={styles.etaSection}>
-            <Text style={styles.etaLabel}>Destination Coordinates:</Text>
-            <Text style={styles.etaValue}>
-              {selectedSite.latitude.toFixed(6)}, {selectedSite.longitude.toFixed(6)}
-            </Text>
-          </View>
-
-          {eta && (
-            <>
-              <View style={styles.etaResult}>
-                <Text style={styles.etaResultTitle}>ETA Calculation</Text>
-                <View style={styles.etaResultRow}>
-                  <Text style={styles.etaResultLabel}>Distance:</Text>
-                  <Text style={styles.etaResultValue}>
-                    {eta.distance_km.toFixed(2)} km
-                  </Text>
-                </View>
-                <View style={styles.etaResultRow}>
-                  <Text style={styles.etaResultLabel}>Duration:</Text>
-                  <Text style={styles.etaResultValue}>
-                    {eta.duration_min.toFixed(0)} minutes
-                  </Text>
-                </View>
-              </View>
-            </>
-          )}
-
-          {isCalculatingEta && (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#007AFF" />
-              <Text style={styles.loadingText}>Calculating ETA...</Text>
-            </View>
-          )}
-        </ScrollView>
-      </View>
-    );
-  }
+  const currentRegion = {
+    latitude: initialLat,
+    longitude: initialLng,
+    latitudeDelta: 1.0,
+    longitudeDelta: 1.0,
+  };
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.contentContainer}
+      keyboardShouldPersistTaps="handled"
+    >
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>
@@ -228,124 +286,195 @@ export const ManagerDashboardScreen: React.FC = () => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}>
+      <View>
         {/* Summary Tiles */}
         <View style={styles.summaryContainer}>
-          <View style={styles.summaryTile}>
+          <TouchableOpacity
+            key="total"
+            style={[
+              styles.summaryTile,
+              statusFilter === 'all' && styles.summaryTileActive,
+            ]}
+            onPress={() => setStatusFilter('all')}
+          >
             <Text style={styles.summaryValue}>{stats.total}</Text>
             <Text style={styles.summaryLabel}>Total NFOs</Text>
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.summaryTile, { backgroundColor: '#34C759' }]}>
+          <TouchableOpacity
+            key="online"
+            style={[
+              styles.summaryTile,
+              { backgroundColor: '#34C759' },
+              statusFilter === 'online' && styles.summaryTileActive,
+            ]}
+            onPress={() => setStatusFilter('online')}
+          >
             <Text style={styles.summaryValue}>{stats.online}</Text>
             <Text style={styles.summaryLabel}>Online</Text>
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.summaryTile, { backgroundColor: '#FF3B30' }]}>
+          <TouchableOpacity
+            key="offline"
+            style={[
+              styles.summaryTile,
+              { backgroundColor: '#FF3B30' },
+              statusFilter === 'offline' && styles.summaryTileActive,
+            ]}
+            onPress={() => setStatusFilter('offline')}
+          >
             <Text style={styles.summaryValue}>{stats.offline}</Text>
             <Text style={styles.summaryLabel}>Offline</Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.summaryContainer}>
-          <View style={[styles.summaryTile, { backgroundColor: '#FF9500' }]}>
+          <TouchableOpacity
+            key="free"
+            style={[
+              styles.summaryTile,
+              { backgroundColor: '#FF9500' },
+              statusFilter === 'free' && styles.summaryTileActive,
+            ]}
+            onPress={() => setStatusFilter('free')}
+          >
             <Text style={styles.summaryValue}>{stats.free}</Text>
             <Text style={styles.summaryLabel}>Free</Text>
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.summaryTile, { backgroundColor: '#5AC8FA' }]}>
+          <TouchableOpacity
+            key="busy"
+            style={[
+              styles.summaryTile,
+              { backgroundColor: '#5AC8FA' },
+              statusFilter === 'busy' && styles.summaryTileActive,
+            ]}
+            onPress={() => setStatusFilter('busy')}
+          >
             <Text style={styles.summaryValue}>{stats.busy}</Text>
             <Text style={styles.summaryLabel}>Busy</Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
-        {/* Filters */}
+        {/* Area Filter */}
         <View style={styles.filterSection}>
-          <Text style={styles.filterTitle}>Filter by Status</Text>
-          <View style={styles.filterButtons}>
-            <TouchableOpacity
-              style={[
-                styles.filterButton,
-                filterStatus === 'all' && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterStatus('all')}
-            >
-              <Text
+          <Text style={styles.filterTitle}>Filter by Area</Text>
+          <View style={styles.areaFilterScroll}>
+            {areas.map((area) => (
+              <TouchableOpacity
+                key={area}
                 style={[
-                  styles.filterButtonText,
-                  filterStatus === 'all' && styles.filterButtonTextActive,
+                  styles.areaButton,
+                  selectedArea === area && styles.areaButtonActive,
                 ]}
+                onPress={() => setSelectedArea(area)}
               >
-                All
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.filterButton,
-                filterStatus === 'free' && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterStatus('free')}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  filterStatus === 'free' && styles.filterButtonTextActive,
-                ]}
-              >
-                Free
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.filterButton,
-                filterStatus === 'busy' && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterStatus('busy')}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  filterStatus === 'busy' && styles.filterButtonTextActive,
-                ]}
-              >
-                Busy
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={[
+                    styles.areaButtonText,
+                    selectedArea === area && styles.areaButtonTextActive,
+                  ]}
+                >
+                  {area}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
 
         {/* NFO List */}
         <View style={styles.nfoListSection}>
-          <Text style={styles.nfoListTitle}>Field Engineers</Text>
+          {/* Search Box */}
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search NFO by name or ID..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholderTextColor="#999"
+            />
+          </View>
+
+          {/* Map */}
+          <View style={styles.mapContainer}>
+            <MapView
+              style={styles.map}
+              pointerEvents="auto"
+              initialRegion={currentRegion}
+              region={currentRegion}
+            >
+              {/* NFO markers */}
+              {sortedNfos.map((nfo) => {
+                if (!nfo.lat || !nfo.lng) return null;
+                const status = nfo.status || 'off';
+                let pinColor = '#999';
+                if (nfo.logged_in && nfo.on_shift && status === 'busy') {
+                  pinColor = 'red';
+                } else if (nfo.logged_in && nfo.on_shift && status === 'free') {
+                  pinColor = 'green';
+                } else if (nfo.logged_in) {
+                  pinColor = 'orange';
+                }
+
+                const displayName = getDisplayName(nfo);
+
+                return (
+                  <Marker
+                    key={`nfo-${nfo.username}`}
+                    coordinate={{ latitude: nfo.lat, longitude: nfo.lng }}
+                    pinColor={pinColor}
+                    title={displayName}
+                    description={`ID: ${nfo.username} • ${status} • Site: ${nfo.site_id || '-'}`}
+                  />
+                );
+              })}
+
+              {/* Site markers */}
+              {filteredSites.map((site) => (
+                <Marker
+                  key={`site-${site.site_id}`}
+                  coordinate={{ latitude: site.latitude!, longitude: site.longitude! }}
+                  pinColor="#0044cc"
+                  title={String(site.site_id)}
+                  description={site.area || ''}
+                />
+              ))}
+            </MapView>
+          </View>
+
+          <Text style={styles.nfoListTitle}>Field Engineers ({sortedNfos.length})</Text>
           {isLoading ? (
             <ActivityIndicator
               size="large"
               color="#007AFF"
               style={{ marginVertical: 20 }}
             />
-          ) : nfoList.length === 0 ? (
-            <Text style={styles.noDataText}>No NFOs found</Text>
+          ) : sortedNfos.length === 0 ? (
+            <Text style={styles.noDataText}>
+              {nfoList.length === 0 ? 'No NFOs found' : 'No NFOs in this area'}
+            </Text>
           ) : (
-            <FlatList
-              scrollEnabled={false}
-              data={nfoList}
-              keyExtractor={(item) => item.username}
-              renderItem={({ item }) => (
-                <View style={styles.nfoCard}>
+            <View style={styles.nfoList}>
+              {sortedNfos.map((item) => (
+                <View key={item.username} style={styles.nfoCard}>
                   <View style={styles.nfoCardHeader}>
-                    <Text style={styles.nfoName}>{item.username}</Text>
+                    <View>
+                      <Text style={styles.nfoName}>{getDisplayName(item)}</Text>
+                      <Text style={styles.nfoId}>ID: {item.username}</Text>
+                      <Text style={styles.nfoLocation}>
+                        {item.home_location || 'N/A'}
+                      </Text>
+                    </View>
                     <View
                       style={[
                         styles.statusBadge,
-                        item.status === 'free'
-                          ? styles.statusFree
-                          : styles.statusBusy,
+                        {
+                          backgroundColor: getStatusColor(item),
+                        },
                       ]}
                     >
                       <Text style={styles.statusBadgeText}>
-                        {item.status}
+                        {getStatusLabel(item)}
                       </Text>
                     </View>
                   </View>
@@ -355,47 +484,30 @@ export const ManagerDashboardScreen: React.FC = () => {
                       <Text style={styles.detailLabel}>Shift:</Text>{' '}
                       {item.on_shift ? '✓ On' : '✗ Off'}
                     </Text>
-                    <Text style={styles.detailText}>
-                      <Text style={styles.detailLabel}>Site:</Text>{' '}
-                      {item.site_id || 'N/A'}
-                    </Text>
-                    <Text style={styles.detailText}>
-                      <Text style={styles.detailLabel}>Activity:</Text>{' '}
-                      {item.activity || 'N/A'}
-                    </Text>
+                    {item.site_id && (
+                      <Text style={styles.detailText}>
+                        <Text style={styles.detailLabel}>Site:</Text>{' '}
+                        {item.site_id}
+                      </Text>
+                    )}
+                    {item.activity && (
+                      <Text style={styles.detailText}>
+                        <Text style={styles.detailLabel}>Activity:</Text>{' '}
+                        {item.activity}
+                      </Text>
+                    )}
                     <Text style={styles.detailText}>
                       <Text style={styles.detailLabel}>Last Active:</Text>{' '}
-                      {formatTimeAgo(item.last_active_at)}
+                      {formatTimeAgo(item.last_ping)}
                     </Text>
                   </View>
-
-                  {item.lat && item.lng && (
-                    <TouchableOpacity
-                      style={styles.etaButton}
-                      onPress={() => {
-                        // Show site selection for ETA
-                        setSelectedNfo(item);
-                        Alert.alert(
-                          'Select Destination Site',
-                          'Choose a site to calculate ETA',
-                          sites.slice(0, 5).map((site) => ({
-                            text: `${site.site_id} (${site.city})`,
-                            onPress: () => calculateEta(item, site),
-                          }))
-                        );
-                      }}
-                      disabled={isCalculatingEta}
-                    >
-                      <Text style={styles.etaButtonText}>Calculate ETA</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
-              )}
-            />
+              ))}
+            </View>
           )}
         </View>
-      </ScrollView>
-    </View>
+      </View>
+    </ScrollView>
   );
 };
 
@@ -403,6 +515,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f5f5f5',
+  },
+  contentContainer: {
+    paddingBottom: 32,
   },
   header: {
     backgroundColor: '#fff',
@@ -433,9 +548,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
   },
-  content: {
-    flex: 1,
-  },
   summaryContainer: {
     flexDirection: 'row',
     padding: 12,
@@ -458,6 +570,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginTop: 4,
   },
+  summaryTileActive: {
+    borderWidth: 3,
+    borderColor: '#000',
+    opacity: 0.9,
+  },
   filterSection: {
     backgroundColor: '#fff',
     margin: 12,
@@ -470,31 +587,62 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     color: '#333',
   },
-  filterButtons: {
+  areaFilterScroll: {
     flexDirection: 'row',
-    gap: 8,
+    flexWrap: 'wrap',
+    marginTop: 8,
   },
-  filterButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 6,
+  areaButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#ddd',
-    alignItems: 'center',
+    marginRight: 8,
+    marginBottom: 8,
+    backgroundColor: '#fff',
   },
-  filterButtonActive: {
-    borderColor: '#007AFF',
-    backgroundColor: '#007AFF',
+  areaButtonActive: {
+    backgroundColor: '#007bff',
+    borderColor: '#007bff',
   },
-  filterButtonText: {
-    fontSize: 14,
+  areaButtonText: {
+    fontSize: 13,
     color: '#666',
   },
-  filterButtonTextActive: {
+  areaButtonTextActive: {
     color: '#fff',
   },
   nfoListSection: {
     padding: 12,
+  },
+  nfoList: {
+    marginTop: 8,
+  },
+  searchContainer: {
+    marginBottom: 12,
+  },
+  searchInput: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#333',
+  },
+  mapContainer: {
+    marginTop: 12,
+    marginBottom: 16,
+    height: 260,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  map: {
+    flex: 1,
   },
   nfoListTitle: {
     fontSize: 18,
@@ -523,6 +671,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#333',
+  },
+  nfoId: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
+  },
+  nfoLocation: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
   },
   statusBadge: {
     paddingHorizontal: 10,
