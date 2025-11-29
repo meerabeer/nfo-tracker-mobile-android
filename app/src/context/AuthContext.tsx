@@ -1,10 +1,9 @@
 import React, { createContext, useState, useCallback, useContext } from 'react';
-import { supabase } from '../services/supabaseClient';
 import { loginWithSupabase } from '../services/authApi';
-import { AuthState, NFOUser, Manager, UserRole } from '../types';
+import { AuthState, NFOUser } from '../types';
 
 interface AuthContextType extends AuthState {
-  login: (username: string, password: string, role: UserRole) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -15,39 +14,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
-    role: null,
     isLoading: false,
     error: null,
   });
 
   const login = useCallback(
-    async (username: string, password: string, role: UserRole) => {
+    async (username: string, password: string) => {
       setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
       try {
-        // Convert UserRole to authApi UserRole
-        const apiRole = role === 'NFO' ? 'nfo' : 'manager';
+        // Use loginWithSupabase from authApi for validation (always NFO)
+        const result = await loginWithSupabase(username, password);
         
-        // Use loginWithSupabase from authApi for validation
-        const result = await loginWithSupabase(apiRole, username, password);
-        
-        // Map the result to the expected NFOUser or Manager format
-        const userData: NFOUser | Manager = role === 'NFO'
-          ? {
-              username: result.username,
-              full_name: result.name || '',
-              home_location: result.home_location || '',
-              is_active: true,
-            }
-          : {
-              username: result.username,
-              full_name: result.name || '',
-              area: result.area || '',
-            };
+        // Map the result to the expected NFOUser format
+        const userData: NFOUser = {
+          username: result.username,
+          full_name: result.name || '',
+          home_location: result.home_location || '',
+          is_active: true,
+        };
 
         setAuthState({
           user: userData,
-          role: role,
           isLoading: false,
           error: null,
         });
@@ -68,7 +56,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const logout = useCallback(async () => {
     setAuthState({
       user: null,
-      role: null,
       isLoading: false,
       error: null,
     });

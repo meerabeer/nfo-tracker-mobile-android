@@ -12,12 +12,11 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../services/supabaseClient';
 import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
 import { NFOStatusType, LocationCoordinates } from '../types';
 import DebugScreen from '../components/DebugScreen';
+import { useBackgroundLocation } from '../hooks/useBackgroundLocation';
 
 const HEARTBEAT_SECONDS = 30; // Configurable heartbeat interval
-const BACKGROUND_TASK_NAME = 'NFO_TRACKING_TASK';
 
 const ACTIVITY_OPTIONS = [
   'Outage',
@@ -28,33 +27,6 @@ const ACTIVITY_OPTIONS = [
   'MDT',
   'JV',
 ] as const;
-
-interface LocationUpdate {
-  lat: number;
-  lng: number;
-}
-
-// Register background task
-TaskManager.defineTask(BACKGROUND_TASK_NAME, async ({ data, error }) => {
-  if (error) {
-    console.error('Background task error:', error);
-    return;
-  }
-
-  if (data) {
-    const { locations } = data as { locations: Location.LocationObject[] };
-    if (locations && locations.length > 0) {
-      const lastLocation = locations[locations.length - 1];
-      // Note: We can't directly access React state here, so we'll store in AsyncStorage
-      // or use a different pattern. For now, log it.
-      console.log(
-        'Background location update:',
-        lastLocation.coords.latitude,
-        lastLocation.coords.longitude
-      );
-    }
-  }
-});
 
 export const NFOHomeScreen: React.FC = () => {
   const { user, logout } = useAuth();
@@ -69,8 +41,6 @@ export const NFOHomeScreen: React.FC = () => {
   const [lastHeartbeat, setLastHeartbeat] = useState<string>('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [backgroundTaskRegistered, setBackgroundTaskRegistered] =
-    useState(false);
   const [siteOptions, setSiteOptions] = useState<string[]>([]); // All valid site IDs from Site_Coordinates
   const [showSiteSuggestions, setShowSiteSuggestions] = useState(false); // Show/hide dropdown
   const [showActivityMenu, setShowActivityMenu] = useState(false); // Show/hide activity dropdown
@@ -81,6 +51,18 @@ export const NFOHomeScreen: React.FC = () => {
   );
 
   const username = (user as any)?.username || '';
+
+  // Use the background location hook for tracking when on shift
+  const { isRegistered, lastUpdateTime, stopTracking } = useBackgroundLocation({
+    enabled: onShift,
+    heartbeatIntervalSeconds: HEARTBEAT_SECONDS,
+    onLocationUpdate: async (lat, lng) => {
+      // Keep currentLocation in sync with background updates
+      setCurrentLocation({ lat, lng });
+      // Write coordinates + timestamps to Supabase on every 30s update
+      await sendLocationHeartbeat(lat, lng);
+    },
+  });
 
   // Filter site options based on current query
   const filteredSiteOptions = useMemo(() => {
@@ -228,85 +210,39 @@ export const NFOHomeScreen: React.FC = () => {
   // Handle shift toggle
   const handleShiftToggle = async (newValue: boolean) => {
     setOnShift(newValue);
-
-    if (newValue) {
-      // Start background tracking when going on shift
-      await startBackgroundTracking();
-    } else {
-      // Stop background tracking when going off shift
-      await stopBackgroundTracking();
-    }
-
     // Send status update immediately when shift changes
     if (currentLocation) {
-      await sendStatusHeartbeat(currentLocation.lat, currentLocation.lng);
-    }
-  };
-
-  const startBackgroundTracking = async () => {
-    try {
-      const isTaskDefined = TaskManager.isTaskDefined(BACKGROUND_TASK_NAME);
-
-      if (!isTaskDefined) {
-        TaskManager.defineTask(BACKGROUND_TASK_NAME, async ({ data, error }) => {
-          if (error) {
-            console.error('Background task error:', error);
-            return;
-          }
-
-          if (data) {
-            const { locations } = data as {
-              locations: Location.LocationObject[];
-            };
-            if (locations && locations.length > 0) {
-              const location = locations[locations.length - 1];
-              await sendLocationHeartbeat(
-                location.coords.latitude,
-                location.coords.longitude
-              );
-            }
-          }
-        });
-      }
-
-      // Start location tracking in background
-      await Location.startLocationUpdatesAsync(BACKGROUND_TASK_NAME, {
-        accuracy: Location.Accuracy.High,
-        timeInterval: HEARTBEAT_SECONDS * 1000,
-        distanceInterval: 0,
-        foregroundService: {
-          notificationTitle: 'NFO Tracking Active',
-          notificationBody: 'Sending location updates...',
-        },
+      await sendStatusHeartbeat(currentLocation.lat, currentLocation.lng, {
+        onShift: newValue,
+        // keep current activity/site/workOrder as they are
       });
-
-      setBackgroundTaskRegistered(true);
-
-      Alert.alert('Success', 'Background tracking started');
-    } catch (err) {
-      console.error('Error starting background tracking:', err);
-      Alert.alert('Error', 'Failed to start background tracking');
     }
   };
 
-  const stopBackgroundTracking = async () => {
-    try {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME);
-      setBackgroundTaskRegistered(false);
-
-      Alert.alert('Success', 'Background tracking stopped');
-    } catch (err) {
-      console.error('Error stopping background tracking:', err);
+  const sendStatusHeartbeat = async (
+    lat: number,
+    lng: number,
+    overrides?: {
+      activity?: string;
+      selectedSiteId?: string;
+      siteQuery?: string;
+      workOrderId?: string;
+      onShift?: boolean;
     }
-  };
-
-  const sendStatusHeartbeat = async (lat: number, lng: number) => {
+  ) => {
     try {
       setIsLoading(true);
 
+      // Compute effective values using overrides first, then state
+      const effectiveActivity = overrides?.activity ?? activity;
+      const effectiveSelectedSiteId = overrides?.selectedSiteId ?? selectedSiteId;
+      const effectiveSiteQuery = overrides?.siteQuery ?? siteQuery;
+      const effectiveWorkOrderId = overrides?.workOrderId ?? workOrderId;
+      const effectiveOnShift = overrides?.onShift ?? onShift;
+
       // VALIDATION: Enhanced site ID validation logic
-      const typed = siteQuery.trim();
-      const chosen = (selectedSiteId || '').trim();
+      const typed = effectiveSiteQuery.trim();
+      const chosen = (effectiveSelectedSiteId || '').trim();
       let finalSiteId: string | null = null;
 
       // 1) If user typed something but did not select from dropdown:
@@ -351,10 +287,10 @@ export const NFOHomeScreen: React.FC = () => {
       // - Else if activity or finalSiteId has non-empty value -> 'busy'
       // - Else -> 'free'
       let statusForDb: string;
-      if (!onShift) {
+      if (!effectiveOnShift) {
         statusForDb = 'off-shift';
       } else {
-        const hasActivity = activity.trim().length > 0;
+        const hasActivity = effectiveActivity.trim().length > 0;
         const hasSiteId = finalSiteId ? finalSiteId.length > 0 : false;
         statusForDb = hasActivity || hasSiteId ? 'busy' : 'free';
       }
@@ -378,11 +314,11 @@ export const NFOHomeScreen: React.FC = () => {
       const heartbeatPayload = {
         username: username,
         logged_in: true,
-        on_shift: onShift,
+        on_shift: effectiveOnShift,
         status: statusForDb,
-        activity: activity || null,
+        activity: effectiveActivity || null,
         site_id: finalSiteId, // Use finalSiteId (canonical from siteOptions)
-        work_order_id: workOrderId || null,
+        work_order_id: effectiveWorkOrderId || null,
         lat: lat,
         lng: lng,
         home_location: homeLocation,
@@ -461,17 +397,18 @@ export const NFOHomeScreen: React.FC = () => {
     setShowActivityMenu(false); // Close activity dropdown
     // Update lastUpdatedAt to current time
     setLastUpdatedAt(new Date());
-    // Send status update immediately
+    // Send status update immediately with explicit overrides (state hasn't updated yet)
     if (currentLocation) {
-      await sendStatusHeartbeat(currentLocation.lat, currentLocation.lng);
+      const overrides = { activity: '', selectedSiteId: '', siteQuery: '', workOrderId: '', onShift };
+      await sendStatusHeartbeat(currentLocation.lat, currentLocation.lng, overrides);
     }
   };
 
   const handleLogout = async () => {
     try {
-      // Stop background tracking first
+      // Stop background tracking first if enabled
       if (onShift) {
-        await stopBackgroundTracking();
+        await stopTracking();
       }
 
       // Clear all activity state for final logout heartbeat
@@ -527,7 +464,7 @@ export const NFOHomeScreen: React.FC = () => {
   if (showDebug) {
     return (
       <DebugScreen
-        backgroundTaskRegistered={backgroundTaskRegistered}
+        backgroundTaskRegistered={isRegistered}
         lastGpsLocation={currentLocation}
         lastHeartbeat={lastHeartbeat}
         onClose={() => setShowDebug(false)}

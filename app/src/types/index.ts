@@ -1,6 +1,4 @@
 // User and Authentication Types
-export type UserRole = 'NFO' | 'Manager';
-
 export interface NFOUser {
   username: string;
   full_name: string;
@@ -8,15 +6,8 @@ export interface NFOUser {
   is_active: boolean;
 }
 
-export interface Manager {
-  username: string;
-  full_name: string;
-  area: string;
-}
-
 export interface AuthState {
-  user: NFOUser | Manager | null;
-  role: UserRole | null;
+  user: NFOUser | null;
   isLoading: boolean;
   error: string | null;
 }

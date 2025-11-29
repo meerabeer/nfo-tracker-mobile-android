@@ -8,15 +8,13 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { loginWithSupabase, UserRole as AuthApiUserRole } from '../services/authApi';
+import { loginWithSupabase } from '../services/authApi';
 import { useAuth } from '../context/AuthContext';
-import { UserRole } from '../types';
 
 export const LoginScreen: React.FC = () => {
   const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('NFO');
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
@@ -27,13 +25,12 @@ export const LoginScreen: React.FC = () => {
 
     setLoading(true);
     try {
-      // Validate with loginWithSupabase first
-      const apiRole: AuthApiUserRole = role === 'NFO' ? 'nfo' : 'manager';
-      const user = await loginWithSupabase(apiRole, username, password);
+      // Validate with loginWithSupabase first (always NFO)
+      const user = await loginWithSupabase(username, password);
       console.log('Login successful:', user);
       
       // Then update auth context to trigger navigation
-      await login(username, password, role);
+      await login(username, password);
     } catch (err) {
       Alert.alert(
         'Login error',
@@ -46,43 +43,7 @@ export const LoginScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>NFO Tracker</Text>
-      <Text style={styles.subtitle}>Field Engineer Tracking System</Text>
-
-      <View style={styles.roleSelector}>
-        <TouchableOpacity
-          style={[
-            styles.roleButton,
-            role === 'NFO' && styles.roleButtonActive,
-          ]}
-          onPress={() => setRole('NFO')}
-        >
-          <Text
-            style={[
-              styles.roleButtonText,
-              role === 'NFO' && styles.roleButtonTextActive,
-            ]}
-          >
-            NFO
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.roleButton,
-            role === 'Manager' && styles.roleButtonActive,
-          ]}
-          onPress={() => setRole('Manager')}
-        >
-          <Text
-            style={[
-              styles.roleButtonText,
-              role === 'Manager' && styles.roleButtonTextActive,
-            ]}
-          >
-            Manager
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <Text style={styles.subtitle}>Field engineer live tracking & status</Text>
 
       <TextInput
         style={styles.input}
@@ -91,6 +52,7 @@ export const LoginScreen: React.FC = () => {
         onChangeText={setUsername}
         editable={!loading}
         placeholderTextColor="#999"
+        autoCapitalize="none"
       />
 
       <TextInput
@@ -116,7 +78,7 @@ export const LoginScreen: React.FC = () => {
       </TouchableOpacity>
 
       <Text style={styles.infoText}>
-        Note: Login with valid credentials from the Supabase database
+        Login with your NFO credentials
       </Text>
     </View>
   );
@@ -142,32 +104,6 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     color: '#666',
   },
-  roleSelector: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    gap: 10,
-  },
-  roleButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#ddd',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  roleButtonActive: {
-    borderColor: '#007AFF',
-    backgroundColor: '#007AFF',
-  },
-  roleButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
-  },
-  roleButtonTextActive: {
-    color: '#fff',
-  },
   input: {
     backgroundColor: '#fff',
     borderRadius: 8,
@@ -192,12 +128,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
-  },
-  errorText: {
-    color: '#FF3B30',
-    fontSize: 14,
-    marginBottom: 10,
-    textAlign: 'center',
   },
   infoText: {
     fontSize: 12,

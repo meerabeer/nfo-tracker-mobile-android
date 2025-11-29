@@ -4,18 +4,16 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { useAuth } from '../context/AuthContext';
 import { LoginScreen } from '../screens/LoginScreen';
 import NFOHomeScreen from '../screens/NFOHomeScreen';
-import ManagerDashboardScreen from '../screens/ManagerDashboardScreen';
 
 export type RootStackParamList = {
   Login: undefined;
   NFOHome: undefined;
-  ManagerDashboard: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
 
 export const Navigation: React.FC = () => {
-  const { user, role } = useAuth();
+  const { user } = useAuth();
 
   return (
     <NavigationContainer>
@@ -33,18 +31,10 @@ export const Navigation: React.FC = () => {
               animationEnabled: false,
             }}
           />
-        ) : role === 'NFO' ? (
+        ) : (
           <Stack.Screen
             name="NFOHome"
             component={NFOHomeScreen}
-            options={{
-              animationEnabled: false,
-            }}
-          />
-        ) : (
-          <Stack.Screen
-            name="ManagerDashboard"
-            component={ManagerDashboardScreen}
             options={{
               animationEnabled: false,
             }}

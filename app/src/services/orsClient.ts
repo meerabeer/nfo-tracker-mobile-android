@@ -1,15 +1,21 @@
 import axios from 'axios';
 import { ETAResponse, LocationCoordinates } from '../types';
 
-// TODO: Set this environment variable in app.json or .env file:
-// EXPO_PUBLIC_ORS_API_URL - Your backend endpoint that proxies OpenRouteService
-// Example: https://your-backend.com/api/eta
+// Environment variables for ORS configuration
+// Local dev: set in .env file
+// EAS builds: set via `eas secret:create` or in eas.json env block
+const orsBaseUrl = process.env.EXPO_PUBLIC_ORS_BASE_URL;
+const orsApiKey = process.env.EXPO_PUBLIC_ORS_API_KEY;
 
-const ORS_API_URL = process.env.EXPO_PUBLIC_ORS_API_URL;
+if (!orsBaseUrl) {
+  throw new Error(
+    '[ORS] EXPO_PUBLIC_ORS_BASE_URL is missing. Configure it in .env for local dev and as EAS secrets for builds.'
+  );
+}
 
-if (!ORS_API_URL) {
-  console.warn(
-    'Missing ORS API configuration. Please set EXPO_PUBLIC_ORS_API_URL env variable.'
+if (!orsApiKey) {
+  throw new Error(
+    '[ORS] EXPO_PUBLIC_ORS_API_KEY is missing. Configure it in .env for local dev and as EAS secrets for builds.'
   );
 }
 
@@ -24,14 +30,19 @@ export const getEtaForNfo = async (
   destination: LocationCoordinates
 ): Promise<ETAResponse> => {
   try {
-    if (!ORS_API_URL) {
-      throw new Error('ORS API URL not configured');
-    }
-
-    const response = await axios.post<ETAResponse>(ORS_API_URL, {
-      origin: { lat: origin.lat, lng: origin.lng },
-      destination: { lat: destination.lat, lng: destination.lng },
-    });
+    const response = await axios.post<ETAResponse>(
+      `${orsBaseUrl}/route`,
+      {
+        origin: { lat: origin.lat, lng: origin.lng },
+        destination: { lat: destination.lat, lng: destination.lng },
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': orsApiKey,
+        },
+      }
+    );
 
     return response.data;
   } catch (error) {

@@ -1,19 +1,21 @@
 import { createClient } from '@supabase/supabase-js';
 
-// TODO: Set these environment variables in app.json or .env file:
-// EXPO_PUBLIC_SUPABASE_URL - Your Supabase project URL
-// EXPO_PUBLIC_SUPABASE_ANON_KEY - Your Supabase anonymous key
-
+// Environment variables for Supabase configuration
+// Local dev: set in .env file
+// EAS builds: set via `eas secret:create` or in eas.json env block
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn(
-    'Missing Supabase configuration. Please set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY env variables.'
+if (!supabaseUrl) {
+  throw new Error(
+    '[Supabase] EXPO_PUBLIC_SUPABASE_URL is missing. Configure it in .env for local dev and as EAS secrets for builds.'
   );
 }
 
-export const supabase = createClient(
-  supabaseUrl || '',
-  supabaseAnonKey || ''
-);
+if (!supabaseAnonKey) {
+  throw new Error(
+    '[Supabase] EXPO_PUBLIC_SUPABASE_ANON_KEY is missing. Configure it in .env for local dev and as EAS secrets for builds.'
+  );
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);

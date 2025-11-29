@@ -4,6 +4,10 @@ import * as TaskManager from 'expo-task-manager';
 
 const BACKGROUND_TASK_NAME = 'NFO_TRACKING_TASK';
 
+// Store callback ref at module level so the task can access it
+let onLocationUpdateRef: ((lat: number, lng: number) => Promise<void>) | null = null;
+let setLastUpdateTimeRef: ((date: Date) => void) | null = null;
+
 interface UseBackgroundLocationOptions {
   onLocationUpdate?: (lat: number, lng: number) => Promise<void>;
   heartbeatIntervalSeconds?: number;
@@ -18,14 +22,22 @@ export const useBackgroundLocation = ({
   const [isRegistered, setIsRegistered] = useState(false);
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
 
+  // Keep refs updated so the background task can access latest values
   useEffect(() => {
-    const setupBackgroundTask = async () => {
-      if (!enabled) return;
+    onLocationUpdateRef = onLocationUpdate || null;
+    setLastUpdateTimeRef = setLastUpdateTime;
+  }, [onLocationUpdate]);
 
+  useEffect(() => {
+    // If not enabled, do nothing
+    if (!enabled) return;
+
+    const setupBackgroundTask = async () => {
       try {
         // Check if task is already defined
         const isDefined = TaskManager.isTaskDefined(BACKGROUND_TASK_NAME);
 
+        // Define the task exactly once if not already defined
         if (!isDefined) {
           TaskManager.defineTask(
             BACKGROUND_TASK_NAME,
@@ -39,14 +51,20 @@ export const useBackgroundLocation = ({
                 const { locations } = data as {
                   locations: Location.LocationObject[];
                 };
+                // Use the last location in the array
                 if (locations && locations.length > 0) {
                   const location = locations[locations.length - 1];
-                  if (onLocationUpdate) {
+                  const lat = location.coords.latitude;
+                  const lng = location.coords.longitude;
+
+                  // Call onLocationUpdate if provided
+                  if (onLocationUpdateRef) {
                     try {
-                      await onLocationUpdate(
-                        location.coords.latitude,
-                        location.coords.longitude
-                      );
+                      await onLocationUpdateRef(lat, lng);
+                      // Update lastUpdateTime after successful callback
+                      if (setLastUpdateTimeRef) {
+                        setLastUpdateTimeRef(new Date());
+                      }
                     } catch (err) {
                       console.error('Error calling onLocationUpdate:', err);
                     }
@@ -69,7 +87,6 @@ export const useBackgroundLocation = ({
         });
 
         setIsRegistered(true);
-        setLastUpdateTime(new Date());
       } catch (err) {
         console.error('Error setting up background location:', err);
       }
@@ -77,21 +94,39 @@ export const useBackgroundLocation = ({
 
     setupBackgroundTask();
 
+    // Cleanup: stop tracking when enabled becomes false or component unmounts
     return () => {
-      if (enabled) {
-        Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME).catch(
-          (err) => console.error('Error stopping location updates:', err)
-        );
-      }
+      (async () => {
+        try {
+          const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+            BACKGROUND_TASK_NAME
+          );
+          if (hasStarted) {
+            await Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME);
+          }
+        } catch (err) {
+          // Task not found / not started is safe to ignore
+          console.warn('Background tracking was not running, nothing to stop.');
+        }
+        setIsRegistered(false);
+      })();
     };
-  }, [enabled, onLocationUpdate, heartbeatIntervalSeconds]);
+  }, [enabled, heartbeatIntervalSeconds]);
 
   const stopTracking = async () => {
     try {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME);
+      const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+        BACKGROUND_TASK_NAME
+      );
+
+      if (hasStarted) {
+        await Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME);
+      }
+
       setIsRegistered(false);
     } catch (err) {
-      console.error('Error stopping tracking:', err);
+      // Task not found / not started is safe to ignore
+      console.warn('Background tracking was not running, nothing to stop.');
     }
   };
 
